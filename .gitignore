@@ -1,0 +1,6 @@
+/vtk/
+/surrogate/
+/data/
+__pycache__/
+*.pyc
+/models/
