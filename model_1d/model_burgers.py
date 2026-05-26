@@ -68,7 +68,7 @@ def pca_compression_study_on_Y(
     outB: dict,
     data_dir: str,
     test_indices: np.ndarray,
-    ranks=(16, 32, 64, 128, 256, 512),
+    ranks=(16, 32, 64, 128, 256, 512, 1024),
     n_show=1,
 ):
     """
@@ -684,7 +684,7 @@ def train_mlp(model, Xtr, Ytr, Xte, Yte, lr=1e-4, epochs=1000, print_every=100):
             print(f"epoch {ep:4d} | train_mse {loss.item():.4e} | test_mse {te:.4e}")
     return model
 
-def eval_step_function_error(Yhat, data_dir, test_indices, t1, meta, eval_count=50):
+def eval_step_function_error(Yhat, Ytrue, data_dir, test_indices, t1, meta, eval_count=50):
     errs = []
     for i in range(min(eval_count, len(test_indices))):
         idx0 = int(test_indices[i])
@@ -696,12 +696,24 @@ def eval_step_function_error(Yhat, data_dir, test_indices, t1, meta, eval_count=
         y_meta_local["t_value"] = float(t_grid[ti])
 
         u_pred = decode_output_scheme2_slice_fourier(Yhat[i], y_meta_local)
-        u_true = U[ti, :]
-        errs.append(rel_l2(u_pred, u_true))
+        u_repr = decode_output_scheme2_slice_fourier(Ytrue[i], y_meta_local)
+        u_raw = U[ti, :]
+
+        errs.append(rel_l2(u_pred, u_raw))
+
+        if i == 0:
+            print_error_decomposition_1d(
+                approx_repr=u_repr,
+                approx_pred=u_pred,
+                approx_raw=u_raw,
+                label="[step sample 0] ",
+            )
+
     return float(np.mean(errs)), float(np.median(errs))
 
 def eval_continuous_function_error(
     Yhat: np.ndarray,
+    Ytrue: np.ndarray,
     data_dir: str,
     test_indices: np.ndarray,
     Nt: int,
@@ -713,12 +725,21 @@ def eval_continuous_function_error(
 
     for i in range(m):
         idx0 = int(test_indices[i])
-        t_grid, x_grid, U_true = load_solution(data_dir, idx0)
+        t_grid, x_grid, U_true_raw = load_solution(data_dir, idx0)
 
         cache = Scheme1Cache(t_grid=t_grid, x_grid=x_grid, Nt=Nt, Kx=Kx)
         U_pred = cache.decode(Yhat[i], t_grid=t_grid)
+        U_repr = cache.decode(Ytrue[i], t_grid=t_grid)
 
-        errs.append(weighted_global_rel_l2(U_pred, U_true, t_grid, x_grid))
+        errs.append(weighted_global_rel_l2(U_pred, U_true_raw, t_grid, x_grid))
+
+        if i == 0:
+            print_error_decomposition_1d(
+                approx_repr=U_repr,
+                approx_pred=U_pred,
+                approx_raw=U_true_raw,
+                label="[continuous sample 0] ",
+            )
 
     return float(np.mean(errs)), float(np.median(errs))
 
@@ -1374,7 +1395,7 @@ def run_training_pipeline(
 
     if task == "step":
         function_rel_l2_mean, function_rel_l2_median = eval_step_function_error(
-            Yhat, data_dir, test_indices, t1, meta, eval_count=eval_count
+            Yhat, Ytrue, data_dir, test_indices, Nt=Nt, Kx=Kx, eval_count=eval_count
         )
         print(
             "function-space rel L2 (step) mean/median:",
@@ -1383,7 +1404,7 @@ def run_training_pipeline(
         )
     else:
         function_rel_l2_mean, function_rel_l2_median = eval_continuous_function_error(
-            Yhat, data_dir, test_indices, Nt=Nt, Kx=Kx, eval_count=eval_count
+            Yhat, Ytrue, data_dir, test_indices, Nt=Nt, Kx=Kx, eval_count=eval_count
         )
         print(
             "function-space rel L2 (continuous) mean/median:",
@@ -1404,21 +1425,40 @@ def run_training_pipeline(
         y_meta_local["t_value"] = float(t_grid[ti])
 
         u_pred = decode_output_scheme2_slice_fourier(Yhat[i], y_meta_local)
+        u_repr = decode_output_scheme2_slice_fourier(Ytrue[i], y_meta_local)
         u_true = U[ti, :]
-        print("function-space rel error (step):", rel_l2(u_pred, u_true))
 
+        print("function-space rel error (step):", rel_l2(u_pred, u_true))
+        print_error_decomposition_1d(
+            approx_repr=u_repr,
+            approx_pred=u_pred,
+            approx_raw=u_true,
+            label="[step single-check] ",
+        )
 
     else:
         # continuous: decode to U(t,x) and compute weighted L2 relative error
-        y_meta = {
-            "Nt": meta["Nt"],
-            "Kx": meta["Kx"],
-            "N_x": len(meta["x_grid"]),
-            "t0": float(meta["t_grid"][0]),
-            "t1": float(meta["t_grid"][-1]),
-        }
-        U_pred = decode_output_scheme1_legendre_time_fourier_space(Yhat[i], y_meta, t_grid)
-
+        # y_meta = {
+        #     "Nt": meta["Nt"],
+        #     "Kx": meta["Kx"],
+        #     "N_x": len(meta["x_grid"]),
+        #     "t0": float(meta["t_grid"][0]),
+        #     "t1": float(meta["t_grid"][-1]),
+        # }
+        # U_pred = decode_output_scheme1_legendre_time_fourier_space(Yhat[i], y_meta, t_grid)
+        cache_dbg = Scheme1Cache(
+            t_grid=t_grid,
+            x_grid=x_grid,
+            Nt=meta["Nt"],
+            Kx=meta["Kx"],
+        )
+        U_pred = cache_dbg.decode(Yhat[i], t_grid=t_grid)
+        U_repr = cache_dbg.decode(Ytrue[i], t_grid=t_grid)
+        print_error_decomposition_1d(
+            approx_repr=U_repr,
+            approx_pred=U_pred,
+            approx_raw=U,
+            label="[continuous single-check] ",)
         wt = trapezoid_weights(t_grid)
         wx = np.full(len(x_grid), 1.0 / len(x_grid))
         err2 = np.sum((wt[:, None] * (U - U_pred) ** 2) * wx[None, :])
@@ -1581,214 +1621,219 @@ def visualize_continuous_result(
 
     print("Global rel L2 (pred):", float(np.sqrt(err2_pred / ref2)))
     print("Global rel L2 (repr bound):", float(np.sqrt(err2_repr / ref2)))
-
+    print_error_decomposition_1d(
+        approx_repr=U_rec_true,
+        approx_pred=U_hat,
+        approx_raw=U_true,
+        label="[continuous visualization] ",
+    )
 # ============================================================
 # 5) Example invocation
 # ============================================================
 
-if __name__ == "__main__":
-    here = Path(__file__).resolve().parent          # folder that contains this file
-    data_root = here.parent / "data"    
-    data_dir = data_root / "viscous_burgers_utx_1d"
-    cache_dir = data_root / "cache" / "burgers_1d"
-    data_dir = str(data_dir)
-    cache_dir = str(cache_dir)
+# if __name__ == "__main__":
+#     here = Path(__file__).resolve().parent          # folder that contains this file
+#     data_root = here.parent / "data"    
+#     data_dir = data_root / "viscous_burgers_utx_1d"
+#     cache_dir = data_root / "cache" / "burgers_1d"
+#     data_dir = str(data_dir)
+#     cache_dir = str(cache_dir)
 
-    t1 = 0.5 # time step size for step task
+#     t1 = 0.5 # time step size for step task
 
-    # test: if the shock can be expressed by the expansion well at t almost 1. 
+#     # test: if the shock can be expressed by the expansion well at t almost 1. 
 
-    # EXPERIMENT NOTE:
-    Kx = 128 # number of Fourier modes for output encoding--- actual dimension Kx*2
-    Nt = 32
-    # due to the shock structure we need a larger tail for this problem. 
-    # TODO: check the distribution/decay of the parameters of Ys. 
-    # choose indices
-    train_size = 9000
-    test_size = 1000
-    assert train_size + test_size <= 10000, "total samples exceed available data"
-    train_indices = np.arange(0, train_size)
-    test_indices  = np.arange(train_size, train_size + test_size)
-    if_PCA = False
-    pca_components = 320 # TODO this is placeholder. choose the dimension automatically
+#     # EXPERIMENT NOTE:
+#     Kx = 128 # number of Fourier modes for output encoding--- actual dimension Kx*2
+#     Nt = 32
+#     # due to the shock structure we need a larger tail for this problem. 
+#     # TODO: check the distribution/decay of the parameters of Ys. 
+#     # choose indices
+#     train_size = 9000
+#     test_size = 1000
+#     assert train_size + test_size <= 10000, "total samples exceed available data"
+#     train_indices = np.arange(0, train_size)
+#     test_indices  = np.arange(train_size, train_size + test_size)
+#     if_PCA = False
+#     pca_components = 320 # TODO this is placeholder. choose the dimension automatically
 
-    tasks =  ['step'] # options: ['distribution','step','continuous']
-    # --------- test for wave reconstrunction: shock case
-    if 'distribution' in tasks:
-        Kx_list = [2, 4, 6, 8, 10, 12, 16, 24, 32, 48, 64, 96, 128]
-        curve = expansion_error_curve_for_one_snapshot(
-            data_dir=data_dir,
-            idx=test_indices[0],
-            t1=t1,
-            Kx_list=Kx_list,
-            load_solution_fn=load_solution,
-            encode_fn=encode_output_scheme2_slice_fourier,
-            decode_fn=decode_output_scheme2_slice_fourier,
-            use_energy_tail=True,
-        )
-        plot_expansion_error_curve(curve)
+#     tasks =  ['step'] # options: ['distribution','step','continuous']
+#     # --------- test for wave reconstrunction: shock case
+#     if 'distribution' in tasks:
+#         Kx_list = [2, 4, 6, 8, 10, 12, 16, 24, 32, 48, 64, 96, 128]
+#         curve = expansion_error_curve_for_one_snapshot(
+#             data_dir=data_dir,
+#             idx=test_indices[0],
+#             t1=t1,
+#             Kx_list=Kx_list,
+#             load_solution_fn=load_solution,
+#             encode_fn=encode_output_scheme2_slice_fourier,
+#             decode_fn=decode_output_scheme2_slice_fourier,
+#             use_energy_tail=True,
+#         )
+#         plot_expansion_error_curve(curve)
 
-    # conclusion: dimension \asymp 10^2 is needed for loyal reconstruction of shock structure. 
+#     # conclusion: dimension \asymp 10^2 is needed for loyal reconstruction of shock structure. 
 
-    if 'step_dim_analysis' in tasks:
-        step_auto = auto_select_step_dimensions_for_training(
-            data_dir=data_dir,
-            train_indices_full=train_indices,
-            test_indices_full=test_indices,
-            analysis_sample_size_train=1000,
-            analysis_sample_size_test=200,
-            t1=t1,
-            input_rank_candidates=[4, 6, 8, 10, 12, 16, 20],
-            output_rank_candidates=[4, 6, 8, 10, 12, 16, 24, 32, 48, 64, 96, 128],
-            output_basis_tol=5e-2,
-            output_basis_metric="function_rel_l2_mean_vs_raw",
-            pca_rank_candidates=[4, 8, 16, 32, 64, 128],
-            output_pca_tol=1e-2,
-            output_pca_metric="function_rel_l2_mean",
-        )
+#     if 'step_dim_analysis' in tasks:
+#         step_auto = auto_select_step_dimensions_for_training(
+#             data_dir=data_dir,
+#             train_indices_full=train_indices,
+#             test_indices_full=test_indices,
+#             analysis_sample_size_train=1000,
+#             analysis_sample_size_test=200,
+#             t1=t1,
+#             input_rank_candidates=[4, 6, 8, 10, 12, 16, 20],
+#             output_rank_candidates=[4, 6, 8, 10, 12, 16, 24, 32, 48, 64, 96, 128],
+#             output_basis_tol=5e-2,
+#             output_basis_metric="function_rel_l2_mean_vs_raw",
+#             pca_rank_candidates=[4, 8, 16, 32, 64, 128],
+#             output_pca_tol=1e-2,
+#             output_pca_metric="function_rel_l2_mean",
+#         )
 
-        print("\nStep-task automatic dimension selection:")
-        print("selected_input_rank:", step_auto["selected_input_rank"])
-        print("selected_output_rank:", step_auto["selected_output_rank"])
-        print("selected_pca_rank:", step_auto["selected_pca_rank"])
+#         print("\nStep-task automatic dimension selection:")
+#         print("selected_input_rank:", step_auto["selected_input_rank"])
+#         print("selected_output_rank:", step_auto["selected_output_rank"])
+#         print("selected_pca_rank:", step_auto["selected_pca_rank"])
 
-        print_rank_curve_table(step_auto["input_selection"]["results"], "1D input truncation analysis")
-        print_rank_curve_table(step_auto["output_selection"]["results"], "1D step output basis analysis")
-        print_rank_curve_table(step_auto["pca_selection"]["results"], "1D step output PCA analysis")
+#         print_rank_curve_table(step_auto["input_selection"]["results"], "1D input truncation analysis")
+#         print_rank_curve_table(step_auto["output_selection"]["results"], "1D step output basis analysis")
+#         print_rank_curve_table(step_auto["pca_selection"]["results"], "1D step output PCA analysis")
 
-        plot_input_truncation_curve_1d(step_auto["input_selection"]["results"])
-        plot_step_output_basis_rank_curve(step_auto["output_selection"]["results"])
-        plot_step_output_pca_curve(step_auto["pca_selection"]["results"])
+#         plot_input_truncation_curve_1d(step_auto["input_selection"]["results"])
+#         plot_step_output_basis_rank_curve(step_auto["output_selection"]["results"])
+#         plot_step_output_pca_curve(step_auto["pca_selection"]["results"])
 
 
-    if 'continuous_dim_analysis' in tasks:
-        cont_auto = auto_select_continuous_dimensions_for_training(
-            data_dir=data_dir,
-            train_indices_full=train_indices,
-            test_indices_full=test_indices,
-            analysis_sample_size_train=1000,
-            analysis_sample_size_test=200,
-            input_rank_candidates=[4, 6, 8, 10, 12, 16, 20],
-            Nt_candidates=[4, 8, 12, 16, 20, 24],
-            Kx_candidates=[8, 16, 24, 32, 48, 64, 96, 128],
-            output_basis_tol=5e-2,
-            output_basis_metric="function_rel_l2_mean_vs_raw",
-            pca_rank_candidates=[8, 16, 32, 64, 128, 256, 512],
-            output_pca_tol=1e-3,
-            output_pca_metric="function_rel_l2_mean",
-        )
+#     if 'continuous_dim_analysis' in tasks:
+#         cont_auto = auto_select_continuous_dimensions_for_training(
+#             data_dir=data_dir,
+#             train_indices_full=train_indices,
+#             test_indices_full=test_indices,
+#             analysis_sample_size_train=1000,
+#             analysis_sample_size_test=200,
+#             input_rank_candidates=[4, 6, 8, 10, 12, 16, 20],
+#             Nt_candidates=[4, 8, 12, 16, 20, 24],
+#             Kx_candidates=[8, 16, 24, 32, 48, 64, 96, 128],
+#             output_basis_tol=5e-2,
+#             output_basis_metric="function_rel_l2_mean_vs_raw",
+#             pca_rank_candidates=[8, 16, 32, 64, 128, 256, 512],
+#             output_pca_tol=1e-3,
+#             output_pca_metric="function_rel_l2_mean",
+#         )
 
-        print("\nContinuous-task automatic dimension selection:")
-        print("selected_input_rank:", cont_auto["selected_input_rank"])
-        print("selected_Nt:", cont_auto["selected_Nt"])
-        print("selected_Kx:", cont_auto["selected_Kx"])
-        print("selected_pca_rank:", cont_auto["selected_pca_rank"])
+#         print("\nContinuous-task automatic dimension selection:")
+#         print("selected_input_rank:", cont_auto["selected_input_rank"])
+#         print("selected_Nt:", cont_auto["selected_Nt"])
+#         print("selected_Kx:", cont_auto["selected_Kx"])
+#         print("selected_pca_rank:", cont_auto["selected_pca_rank"])
 
-        print_rank_curve_table(cont_auto["input_selection"]["results"], "1D input truncation analysis")
-        print_rank_curve_table(cont_auto["grid_selection"]["results"], "1D continuous output grid analysis")
-        print_rank_curve_table(cont_auto["pca_selection"]["results"], "1D continuous output PCA analysis")
+#         print_rank_curve_table(cont_auto["input_selection"]["results"], "1D input truncation analysis")
+#         print_rank_curve_table(cont_auto["grid_selection"]["results"], "1D continuous output grid analysis")
+#         print_rank_curve_table(cont_auto["pca_selection"]["results"], "1D continuous output PCA analysis")
 
-        plot_input_truncation_curve_1d(cont_auto["input_selection"]["results"])
-        plot_continuous_output_rank_grid(cont_auto["grid_selection"]["results"])
-        plot_continuous_output_pca_curve(cont_auto["pca_selection"]["results"])
+#         plot_input_truncation_curve_1d(cont_auto["input_selection"]["results"])
+#         plot_continuous_output_rank_grid(cont_auto["grid_selection"]["results"])
+#         plot_continuous_output_pca_curve(cont_auto["pca_selection"]["results"])
 
-        Kx = cont_auto["selected_Kx"]
-        Nt = cont_auto["selected_Nt"]
-        pca_components = cont_auto["selected_pca_rank"]
-        if_PCA = cont_auto["selected_pca_rank"] > 0
-    if 'step' in tasks:
-        # --- Task A: u0 -> u(t1, x) ---
-        outA = run_training_pipeline(
-            data_dir=data_dir,
-            cache_dir=cache_dir,
-            task="step",
-            train_indices=train_indices,
-            test_indices=test_indices,
-            Kx=Kx, 
-            t1=t1,
-            Nt=None,
-            model_type="rf",
-            use_pca=if_PCA,
-            pca_components=pca_components,
-            normalize_in=1.0,
-            normalize_out=1.0,
-            device="cpu",
-            force_rebuild=True, # activate when changes in training set incurred
-        )
-        print("Task A (step) results:", outA)
-        Yhat_val = outA["Yhat"]
-        Ytrue_val = outA["Ytrue"]
-        t_grid = outA["meta"]["t_grid"]
-        pca = outA["pca"]
-        for i in range(min(10, Yhat_val.shape[0])):
-            print(f"Example {i}: Yhat norm {np.linalg.norm(Yhat_val[i]):.4e}, Ytrue norm {np.linalg.norm(Ytrue_val[i]):.4e}")
-            print('(Yhat-Ytrue)/Y_true', (Yhat_val[i] - Ytrue_val[i])/np.abs(Ytrue_val[i]))
-            # reconstruct and plot the predicted vs true u(t1,x) for this example
-            y_hat = decode_output_scheme2_slice_fourier(Yhat_val[i], outA["meta"]['y_meta'])
-            y_true = decode_output_scheme2_slice_fourier(Ytrue_val[i], outA["meta"]['y_meta'])
-            y_true_truncated = decode_output_scheme2_slice_fourier(Ytrue_val[i][:128], outA["meta"]['y_meta'])
-            # TODO think of better evaluation methods
-            plt.plot(y_hat, label="Yhat")
-            plt.plot(y_true, label="Ytrue", alpha=0.7)
-            plt.plot(y_true_truncated, label=f"Ytrue in the first {Kx} basis", alpha=0.7)
-            plt.legend()
-            plt.title(f"Example {i} - Task A (step)")
-            plt.show()
-    if 'continuous' in tasks:
-        # --- Task B: u0 -> U(t,x) (Legendre time, Fourier space) ---
+#         Kx = cont_auto["selected_Kx"]
+#         Nt = cont_auto["selected_Nt"]
+#         pca_components = cont_auto["selected_pca_rank"]
+#         if_PCA = cont_auto["selected_pca_rank"] > 0
+#     if 'step' in tasks:
+#         # --- Task A: u0 -> u(t1, x) ---
+#         outA = run_training_pipeline(
+#             data_dir=data_dir,
+#             cache_dir=cache_dir,
+#             task="step",
+#             train_indices=train_indices,
+#             test_indices=test_indices,
+#             Kx=Kx, 
+#             t1=t1,
+#             Nt=None,
+#             model_type="rf",
+#             use_pca=if_PCA,
+#             pca_components=pca_components,
+#             normalize_in=1.0,
+#             normalize_out=1.0,
+#             device="cpu",
+#             force_rebuild=True, # activate when changes in training set incurred
+#         )
+#         print("Task A (step) results:", outA)
+#         Yhat_val = outA["Yhat"]
+#         Ytrue_val = outA["Ytrue"]
+#         t_grid = outA["meta"]["t_grid"]
+#         pca = outA["pca"]
+#         for i in range(min(10, Yhat_val.shape[0])):
+#             print(f"Example {i}: Yhat norm {np.linalg.norm(Yhat_val[i]):.4e}, Ytrue norm {np.linalg.norm(Ytrue_val[i]):.4e}")
+#             print('(Yhat-Ytrue)/Y_true', (Yhat_val[i] - Ytrue_val[i])/np.abs(Ytrue_val[i]))
+#             # reconstruct and plot the predicted vs true u(t1,x) for this example
+#             y_hat = decode_output_scheme2_slice_fourier(Yhat_val[i], outA["meta"]['y_meta'])
+#             y_true = decode_output_scheme2_slice_fourier(Ytrue_val[i], outA["meta"]['y_meta'])
+#             y_true_truncated = decode_output_scheme2_slice_fourier(Ytrue_val[i][:128], outA["meta"]['y_meta'])
+#             # TODO think of better evaluation methods
+#             plt.plot(y_hat, label="Yhat")
+#             plt.plot(y_true, label="Ytrue", alpha=0.7)
+#             plt.plot(y_true_truncated, label=f"Ytrue in the first {Kx} basis", alpha=0.7)
+#             plt.legend()
+#             plt.title(f"Example {i} - Task A (step)")
+#             plt.show()
+#     if 'continuous' in tasks:
+#         # --- Task B: u0 -> U(t,x) (Legendre time, Fourier space) ---
         
-        outB = run_training_pipeline(
-            data_dir=data_dir,
-            cache_dir=cache_dir,
-            task="continuous",
-            train_indices=train_indices,
-            test_indices=test_indices,
-            Kx=Kx,
-            t1=None,
-            Nt=Nt,
-            model_type="rf",
-            use_pca=True,
-            pca_components=pca_components,
-            normalize_in=1.0,
-            normalize_out=1.0,
-            device="cpu",
-        )
-        # PCA test on effectiveness of further dimension reduction
-        ranks = (256, 512)  # adjust; must be <= 2*Nt*Kx
-        pca_compression_study_on_Y(
-            outB=outB,
-            data_dir=data_dir,
-            test_indices=test_indices,
-            ranks=ranks,
-            n_show=3,   # 先小一点看趋势
-        )
+#         outB = run_training_pipeline(
+#             data_dir=data_dir,
+#             cache_dir=cache_dir,
+#             task="continuous",
+#             train_indices=train_indices,
+#             test_indices=test_indices,
+#             Kx=Kx,
+#             t1=None,
+#             Nt=Nt,
+#             model_type="rf",
+#             use_pca=True,
+#             pca_components=pca_components,
+#             normalize_in=1.0,
+#             normalize_out=1.0,
+#             device="cpu",
+#         )
+#         # PCA test on effectiveness of further dimension reduction
+#         ranks = (256, 512)  # adjust; must be <= 2*Nt*Kx
+#         pca_compression_study_on_Y(
+#             outB=outB,
+#             data_dir=data_dir,
+#             test_indices=test_indices,
+#             ranks=ranks,
+#             n_show=3,   # 先小一点看趋势
+#         )
 
-        # Recreate cache for decoding/visualization from meta (cheap, deterministic)
-        meta = outB["meta"]
-        I = np.eye(Nt)
-        I_fro = np.linalg.norm(I, ord="fro")
-        cacheB = Scheme1Cache(t_grid=meta["t_grid"], x_grid=meta["x_grid"], Nt=meta["Nt"], Kx=meta["Kx"])
-        print("||Gt - I||:", cacheB.Gt_minus_I_norm)
-        print("||Gt - I||/||I||:", cacheB.Gt_minus_I_norm / I_fro)
-        print('conditional number of Gt', cacheB.Gt_cond)
+#         # Recreate cache for decoding/visualization from meta (cheap, deterministic)
+#         meta = outB["meta"]
+#         I = np.eye(Nt)
+#         I_fro = np.linalg.norm(I, ord="fro")
+#         cacheB = Scheme1Cache(t_grid=meta["t_grid"], x_grid=meta["x_grid"], Nt=meta["Nt"], Kx=meta["Kx"])
+#         print("||Gt - I||:", cacheB.Gt_minus_I_norm)
+#         print("||Gt - I||/||I||:", cacheB.Gt_minus_I_norm / I_fro)
+#         print('conditional number of Gt', cacheB.Gt_cond)
 
-        # Pick one test sample for detailed visualization
-        i = 0
-        idx0 = int(test_indices[i])
-        t_grid, x_grid, U_true = load_solution(data_dir, idx0)
+#         # Pick one test sample for detailed visualization
+#         i = 0
+#         idx0 = int(test_indices[i])
+#         t_grid, x_grid, U_true = load_solution(data_dir, idx0)
 
-        y_true_vec = outB["Ytrue"][i]
-        y_hat_vec = outB["Yhat"][i]
+#         y_true_vec = outB["Ytrue"][i]
+#         y_hat_vec = outB["Yhat"][i]
 
-        visualize_continuous_result(
-            cache=cacheB,
-            t_grid=t_grid,
-            x_grid=x_grid,
-            U_true=U_true,
-            y_true_vec=y_true_vec,
-            y_hat_vec=y_hat_vec,
-            title_prefix="Task B",
-        )
+#         visualize_continuous_result(
+#             cache=cacheB,
+#             t_grid=t_grid,
+#             x_grid=x_grid,
+#             U_true=U_true,
+#             y_true_vec=y_true_vec,
+#             y_hat_vec=y_hat_vec,
+#             title_prefix="Task B",
+#         )
 
 #     Kout_list = [2, 4, 6, 8, 10, 12, 16, 24, 32, 48, 64]  # <= d_in_full
 #     rows = sweep_input_truncation(
@@ -1820,3 +1865,316 @@ if __name__ == "__main__":
     #     plt.legend()
     #     plt.title(f"Example {i} - Task A (step)")
     #     plt.show()
+
+def print_error_decomposition_1d(
+    approx_repr: np.ndarray,
+    approx_pred: np.ndarray,
+    approx_raw: np.ndarray,
+    label: str = "",
+    eps: float = 1e-12,
+):
+    """
+    Compare three objects:
+        approx_raw   : raw truth
+        approx_repr  : represented truth (encode/decode of true target)
+        approx_pred  : predicted output
+
+    Prints:
+        - representation error ||repr - raw|| / ||raw||
+        - learning-on-representation error ||pred - repr|| / ||raw|| and / ||repr||
+        - total error ||pred - raw|| / ||raw||
+        - ratios
+        - cosine similarities of error directions
+    """
+    approx_repr = np.asarray(approx_repr, dtype=float)
+    approx_pred = np.asarray(approx_pred, dtype=float)
+    approx_raw = np.asarray(approx_raw, dtype=float)
+
+    repr_err = approx_repr - approx_raw
+    learn_err = approx_pred - approx_repr
+    total_err = approx_pred - approx_raw
+
+    raw_norm = np.linalg.norm(approx_raw.ravel()) + eps
+    repr_norm = np.linalg.norm(approx_repr.ravel()) + eps
+
+    repr_err_norm = np.linalg.norm(repr_err.ravel())
+    learn_err_norm = np.linalg.norm(learn_err.ravel())
+    total_err_norm = np.linalg.norm(total_err.ravel())
+
+    repr_rel_raw = float(repr_err_norm / raw_norm)
+    learn_rel_raw = float(learn_err_norm / raw_norm)
+    learn_rel_repr = float(learn_err_norm / repr_norm)
+    total_rel_raw = float(total_err_norm / raw_norm)
+
+    cos_repr_learn = float(
+        np.sum(repr_err * learn_err) / (repr_err_norm * learn_err_norm + eps)
+    )
+    cos_repr_total = float(
+        np.sum(repr_err * total_err) / (repr_err_norm * total_err_norm + eps)
+    )
+    cos_learn_total = float(
+        np.sum(learn_err * total_err) / (learn_err_norm * total_err_norm + eps)
+    )
+
+    print(f"{label}representation rel error vs raw: {repr_rel_raw:.6e}")
+    print(f"{label}learning rel error vs raw scale: {learn_rel_raw:.6e}")
+    print(f"{label}learning rel error vs represented scale: {learn_rel_repr:.6e}")
+    print(f"{label}total rel error vs raw: {total_rel_raw:.6e}")
+
+    print(
+        f"{label}ratio repr/learn (raw scale): "
+        f"{repr_rel_raw / (learn_rel_raw + eps):.6e}"
+    )
+    print(
+        f"{label}ratio repr/total: "
+        f"{repr_rel_raw / (total_rel_raw + eps):.6e}"
+    )
+    print(
+        f"{label}ratio learn/total: "
+        f"{learn_rel_raw / (total_rel_raw + eps):.6e}"
+    )
+
+    print(f"{label}cos(repr_err, learn_err): {cos_repr_learn:.6e}")
+    print(f"{label}cos(repr_err, total_err): {cos_repr_total:.6e}")
+    print(f"{label}cos(learn_err, total_err): {cos_learn_total:.6e}")
+
+import argparse
+import importlib
+from pathlib import Path
+import numpy as np
+import torch
+import random
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run 1D operator model with config file.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Config suffix, e.g. burgers_1d -> cfgs.cfg_burgers_1d",
+    )
+    args = parser.parse_args()
+
+    config_module = importlib.import_module(f"cfgs.cfg_{args.config}")
+    cfg = config_module.cfg
+
+    print("Loaded config:")
+    print(cfg)
+
+    torch.manual_seed(getattr(cfg, "seed", 42))
+    np.random.seed(getattr(cfg, "seed", 42))
+    random.seed(getattr(cfg, "seed", 42))
+
+    here = Path(__file__).resolve().parent
+    data_root = here.parent / "data"
+
+    equation = getattr(cfg, "EQ", "viscous_burgers_utx_1d")
+    data_dir = str(getattr(cfg, "DATA_DIR", data_root / equation))
+    cache_dir = str(getattr(cfg, "CACHE_DIR", data_root / "cache" / equation))
+
+    t1 = float(getattr(cfg, "t1", 0.5))
+    Kx = int(getattr(cfg, "Kx", 128))
+    Nt = int(getattr(cfg, "Nt", 32))
+
+    train_size = int(getattr(cfg, "train_sample_size", 5000))
+    test_size = int(getattr(cfg, "test_sample_size", 5000))
+    assert train_size + test_size <= int(getattr(cfg, "max_available_samples", 10000))
+
+    train_indices = np.arange(0, train_size)
+    test_indices = np.arange(train_size, train_size + test_size)
+
+    use_pca = bool(getattr(cfg, "USE_PCA", False))
+    pca_components = int(getattr(cfg, "PCA_COMPONENTS", 320))
+
+    tasks = list(getattr(cfg, "tasks", ["continuous_dim_analysis"]))
+
+    model_type = getattr(cfg, "train", "rf")
+    device = getattr(cfg, "device", "cpu")
+    force_rebuild = bool(getattr(cfg, "FORCE_RECOMPUTE", False))
+    shared_kernel = bool(getattr(cfg, "shared_kernel", True))
+    d_features = int(getattr(cfg, "d_features", 8192))
+    lengthscale = float(getattr(cfg, "lengthscale", 0.5))
+    lam = float(getattr(cfg, "LAMBDA_REG", 1e-4))
+    normalize_in = float(getattr(cfg, "normalize_const_in", 1.0))
+    normalize_out = float(getattr(cfg, "normalize_const_out", 1.0))
+    eval_count = int(getattr(cfg, "eval_count", 50))
+
+    if "distribution" in tasks:
+        Kx_list = list(getattr(
+            cfg,
+            "distribution_Kx_list",
+            [2, 4, 6, 8, 10, 12, 16, 24, 32, 48, 64, 96, 128],
+        ))
+        curve = expansion_error_curve_for_one_snapshot(
+            data_dir=data_dir,
+            idx=int(test_indices[0]),
+            t1=t1,
+            Kx_list=Kx_list,
+            load_solution_fn=load_solution,
+            encode_fn=encode_output_scheme2_slice_fourier,
+            decode_fn=decode_output_scheme2_slice_fourier,
+            use_energy_tail=True,
+        )
+        plot_expansion_error_curve(curve)
+
+    if "step_dim_analysis" in tasks:
+        step_auto = auto_select_step_dimensions_for_training(
+            data_dir=data_dir,
+            train_indices_full=train_indices,
+            test_indices_full=test_indices,
+            analysis_sample_size_train=int(getattr(cfg, "ANALYSIS_SAMPLE_SIZE_TRAIN", 1000)),
+            analysis_sample_size_test=int(getattr(cfg, "ANALYSIS_SAMPLE_SIZE_TEST", 200)),
+            t1=t1,
+            input_rank_candidates=getattr(cfg, "INPUT_RANK_CANDIDATES", [4, 6, 8, 10, 12, 16, 20]),
+            output_rank_candidates=getattr(cfg, "STEP_OUTPUT_RANK_CANDIDATES", [4, 6, 8, 10, 12, 16, 24, 32, 48, 64, 96, 128]),
+            output_basis_tol=float(getattr(cfg, "OUTPUT_BASIS_TOL", 5e-2)),
+            output_basis_metric=getattr(cfg, "STEP_OUTPUT_BASIS_ERROR_METRIC", "function_rel_l2_mean_vs_raw"),
+            pca_rank_candidates=getattr(cfg, "STEP_PCA_RANK_CANDIDATES", [4, 8, 16, 32, 64, 128]),
+            output_pca_tol=float(getattr(cfg, "OUTPUT_PCA_TOL", 1e-2)),
+            output_pca_metric=getattr(cfg, "STEP_OUTPUT_PCA_ERROR_METRIC", "function_rel_l2_mean"),
+        )
+
+        print("\nStep-task automatic dimension selection:")
+        print("selected_input_rank:", step_auto["selected_input_rank"])
+        print("selected_output_rank:", step_auto["selected_output_rank"])
+        print("selected_pca_rank:", step_auto["selected_pca_rank"])
+
+        print_rank_curve_table(step_auto["input_selection"]["results"], "1D input truncation analysis")
+        print_rank_curve_table(step_auto["output_selection"]["results"], "1D step output basis analysis")
+        print_rank_curve_table(step_auto["pca_selection"]["results"], "1D step output PCA analysis")
+
+        if bool(getattr(cfg, "PLOT_DIMENSION_SELECTION", True)):
+            plot_input_truncation_curve_1d(step_auto["input_selection"]["results"])
+            plot_step_output_basis_rank_curve(step_auto["output_selection"]["results"])
+            plot_step_output_pca_curve(step_auto["pca_selection"]["results"])
+
+        if bool(getattr(cfg, "USE_AUTO_SELECTED_STEP_DIMENSIONS", True)):
+            Kx = int(step_auto["selected_output_rank"])
+            pca_components = int(step_auto["selected_pca_rank"])
+            # use_pca could remain false still. setup is in cfg files. 
+
+    if "continuous_dim_analysis" in tasks:
+        cont_auto = auto_select_continuous_dimensions_for_training(
+            data_dir=data_dir,
+            train_indices_full=train_indices,
+            test_indices_full=test_indices,
+            analysis_sample_size_train=int(getattr(cfg, "ANALYSIS_SAMPLE_SIZE_TRAIN", 5000)),
+            analysis_sample_size_test=int(getattr(cfg, "ANALYSIS_SAMPLE_SIZE_TEST", 200)),
+            input_rank_candidates=getattr(cfg, "INPUT_RANK_CANDIDATES", [4, 6, 8, 10, 12, 16, 20]),
+            Nt_candidates=getattr(cfg, "Nt_CANDIDATES", [4, 8, 12, 16, 20, 24]),
+            Kx_candidates=getattr(cfg, "Kx_CANDIDATES", [8, 16, 24, 32, 48, 64, 96, 128]),
+            output_basis_tol=float(getattr(cfg, "OUTPUT_BASIS_TOL", 5e-2)),
+            output_basis_metric=getattr(cfg, "CONTINUOUS_OUTPUT_BASIS_ERROR_METRIC", "function_rel_l2_mean_vs_raw"),
+            pca_rank_candidates=getattr(cfg, "CONTINUOUS_PCA_RANK_CANDIDATES", [8, 16, 32, 64, 128, 256, 512, 1024]),
+            output_pca_tol=float(getattr(cfg, "OUTPUT_PCA_TOL", 5e-4)),
+            output_pca_metric=getattr(cfg, "CONTINUOUS_OUTPUT_PCA_ERROR_METRIC", "function_rel_l2_mean"),
+        )
+
+        print("\nContinuous-task automatic dimension selection:")
+        print("selected_input_rank:", cont_auto["selected_input_rank"])
+        print("selected_Nt:", cont_auto["selected_Nt"])
+        print("selected_Kx:", cont_auto["selected_Kx"])
+        print("selected_pca_rank:", cont_auto["selected_pca_rank"])
+
+        print_rank_curve_table(cont_auto["input_selection"]["results"], "1D input truncation analysis")
+        print_rank_curve_table(cont_auto["grid_selection"]["results"], "1D continuous output grid analysis")
+        print_rank_curve_table(cont_auto["pca_selection"]["results"], "1D continuous output PCA analysis")
+
+        if bool(getattr(cfg, "PLOT_DIMENSION_SELECTION", True)):
+            plot_input_truncation_curve_1d(cont_auto["input_selection"]["results"])
+            plot_continuous_output_rank_grid(cont_auto["grid_selection"]["results"])
+            plot_continuous_output_pca_curve(cont_auto["pca_selection"]["results"])
+
+        if bool(getattr(cfg, "USE_AUTO_SELECTED_CONTINUOUS_DIMENSIONS", True)):
+            Kx = int(cont_auto["selected_Kx"])
+            Nt = int(cont_auto["selected_Nt"])
+            pca_components = int(cont_auto["selected_pca_rank"])
+
+    if "step" in tasks:
+        outA = run_training_pipeline(
+            data_dir=data_dir,
+            cache_dir=cache_dir,
+            task="step",
+            train_indices=train_indices,
+            test_indices=test_indices,
+            Kx=Kx,
+            Kin=getattr(cfg, "Kin", None),
+            t1=t1,
+            Nt=None,
+            model_type=model_type,
+            use_pca=use_pca,
+            pca_components=pca_components,
+            normalize_in=normalize_in,
+            normalize_out=normalize_out,
+            device=device,
+            force_rebuild=force_rebuild,
+            shared_kernel=shared_kernel,
+            d_features=d_features,
+            lengthscale=lengthscale,
+            lam=lam,
+            eval_count=eval_count,
+        )
+        print("Task A (step) results:", outA)
+
+    if "continuous" in tasks:
+        outB = run_training_pipeline(
+            data_dir=data_dir,
+            cache_dir=cache_dir,
+            task="continuous",
+            train_indices=train_indices,
+            test_indices=test_indices,
+            Kx=Kx,
+            Kin=getattr(cfg, "Kin", None),
+            t1=None,
+            Nt=Nt,
+            model_type=model_type,
+            use_pca=use_pca,
+            pca_components=pca_components,
+            normalize_in=normalize_in,
+            normalize_out=normalize_out,
+            device=device,
+            force_rebuild=force_rebuild,
+            shared_kernel=shared_kernel,
+            d_features=d_features,
+            lengthscale=lengthscale,
+            lam=lam,
+            eval_count=eval_count,
+        )
+
+        if bool(getattr(cfg, "RUN_PCA_COMPRESSION_STUDY", True)):
+            ranks = tuple(getattr(cfg, "PCA_COMPRESSION_STUDY_RANKS", (512, 1024)))
+            pca_compression_study_on_Y(
+                outB=outB,
+                data_dir=data_dir,
+                test_indices=test_indices,
+                ranks=ranks,
+                n_show=int(getattr(cfg, "PCA_COMPRESSION_STUDY_N_SHOW", 3)),
+            )
+
+        if bool(getattr(cfg, "VISUALIZE_CONTINUOUS_RESULT", True)):
+            meta = outB["meta"]
+            cacheB = Scheme1Cache(
+                t_grid=meta["t_grid"],
+                x_grid=meta["x_grid"],
+                Nt=meta["Nt"],
+                Kx=meta["Kx"],
+            )
+
+            i = int(getattr(cfg, "VIS_SAMPLE_INDEX", 0))
+            idx0 = int(test_indices[i])
+            t_grid, x_grid, U_true = load_solution(data_dir, idx0)
+
+            visualize_continuous_result(
+                cache=cacheB,
+                t_grid=t_grid,
+                x_grid=x_grid,
+                U_true=U_true,
+                y_true_vec=outB["Ytrue"][i],
+                y_hat_vec=outB["Yhat"][i],
+                title_prefix=str(getattr(cfg, "VIS_TITLE_PREFIX", "Task B")),
+            )
+
+
+if __name__ == "__main__":
+    main()

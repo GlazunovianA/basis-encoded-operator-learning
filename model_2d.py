@@ -15,7 +15,7 @@ import torch.nn as nn
 from matplotlib import pyplot as plt
 from sklearn.decomposition import PCA
 
-from test_expansion_refactored.ed_2d import decode_field_l2_2d, project_on_L2_basis_2d, evaluate_series_L2
+from test_representation_system.ed_2d import decode_field_l2_2d, project_on_L2_basis_2d, evaluate_series_L2
 from util_scaling import z_flatten, z_reconstruction, sigma_generate
 from G_N import RFF, NN_cff_vec
 from neural_network import FullyConnectedNN
@@ -632,25 +632,6 @@ def encode_single_field_to_coeffs(
         "N_ex": int(N_ex),
     }
 
-def interpolate_raw_field_to_grid(
-    x_raw: np.ndarray,
-    y_raw: np.ndarray,
-    values_raw: np.ndarray,
-    Xq: np.ndarray,
-    Yq: np.ndarray,
-    method: str = "linear",
-):
-    query = np.column_stack([Xq.ravel(), Yq.ravel()])
-    points = np.column_stack([np.asarray(x_raw), np.asarray(y_raw)])
-
-    values_on_grid = griddata(points, values_raw, query, method=method)
-
-    if np.any(np.isnan(values_on_grid)):
-        values_nearest = griddata(points, values_raw, query, method="nearest")
-        nan_mask = np.isnan(values_on_grid)
-        values_on_grid[nan_mask] = values_nearest[nan_mask]
-
-    return values_on_grid.reshape(Xq.shape)
 
 def interpolate_scattered_field_to_points(
     x_raw: np.ndarray,
@@ -693,15 +674,6 @@ def plot_field_imshow(ax, field, title, transpose=False):
     ax.set_title(title)
     plt.colorbar(im, ax=ax)
 
-def plot_field_tri(ax, x, y, values, title):
-    tcf = ax.tricontourf(x, y, values, levels=50, cmap="coolwarm")
-    ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 1.0)
-    ax.set_aspect("equal")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_title(title)
-    plt.colorbar(tcf, ax=ax)
 
 def coefficient_errors(pred: np.ndarray, true: np.ndarray):
     mse = float(np.mean((pred - true) ** 2))
@@ -764,6 +736,30 @@ def evaluate_series_to_plot_points(
     }
 
 
+# def interpolate_raw_field_to_grid(
+#     x_raw: np.ndarray,
+#     y_raw: np.ndarray,
+#     values_raw: np.ndarray,
+#     Xq: np.ndarray,
+#     Yq: np.ndarray,
+#     method: str = "linear",
+# ):
+#     points = np.column_stack([x_raw, y_raw])
+#     query = np.column_stack([Xq.ravel(), Yq.ravel()])
+
+#     # Main interpolation: linear on triangulation
+#     linear_interp = LinearNDInterpolator(points, values_raw, fill_value=np.nan)
+#     values_on_grid = linear_interp(query)
+
+#     # values_on_grid = griddata(points, values_raw, query, method=method)
+#     if np.any(np.isnan(values_on_grid)):
+#         values_nearest = griddata(points, values_raw, query, method="nearest")
+#         nan_mask = np.isnan(values_on_grid)
+#         values_on_grid[nan_mask] = values_nearest[nan_mask]
+
+#     return values_on_grid.reshape(Xq.shape)
+
+
 def interpolate_raw_field_to_grid(
     x_raw: np.ndarray,
     y_raw: np.ndarray,
@@ -771,23 +767,19 @@ def interpolate_raw_field_to_grid(
     Xq: np.ndarray,
     Yq: np.ndarray,
     method: str = "linear",
-):
+    fallback_to_nearest: bool = True,
+) -> np.ndarray:
     points = np.column_stack([x_raw, y_raw])
     query = np.column_stack([Xq.ravel(), Yq.ravel()])
 
-    # Main interpolation: linear on triangulation
-    linear_interp = LinearNDInterpolator(points, values_raw, fill_value=np.nan)
-    values_on_grid = linear_interp(query)
+    values_on_grid = griddata(points, values_raw, query, method=method)
 
-
-    # values_on_grid = griddata(points, values_raw, query, method=method)
-    if np.any(np.isnan(values_on_grid)):
+    if fallback_to_nearest and np.any(np.isnan(values_on_grid)):
         values_nearest = griddata(points, values_raw, query, method="nearest")
-        nan_mask = np.isnan(values_on_grid)
-        values_on_grid[nan_mask] = values_nearest[nan_mask]
+        mask = np.isnan(values_on_grid)
+        values_on_grid[mask] = values_nearest[mask]
 
     return values_on_grid.reshape(Xq.shape)
-
 
 def plot_field_tri(ax, Xq: np.ndarray, Yq: np.ndarray, field: np.ndarray, title: str):
     tcf = ax.tricontourf(Xq.ravel(), Yq.ravel(), field.ravel(), levels=50, cmap="coolwarm")
@@ -844,36 +836,81 @@ def visualize_prediction_2d(
             N_quad_for_orth=N_quad_for_orth,
         )
 
-    input_eval = None
-    # if input_coeffs is not None:
-    #     input_eval = evaluate_series_to_plot_points(
-    #         coeffs=input_coeffs,
+    # input_eval = None
+    # # if input_coeffs is not None:
+    # #     input_eval = evaluate_series_to_plot_points(
+    # #         coeffs=input_coeffs,
+    # #         basis_type=input_basis_type,
+    # #         domain=domain,
+    # #         N_quad=N_quad,
+    # #         N_quad_for_orth=N_quad_for_orth,
+    # #     )
+    # input_meta = None
+    # if (
+    #     input_coeffs is not None
+    #     and raw_input_x is not None
+    #     and raw_input_y is not None
+    #     and raw_input_values is not None
+    # ):
+    #     _, input_meta = encode_single_field_to_coeffs(
+    #         x=raw_input_x,
+    #         y=raw_input_y,
+    #         values=raw_input_values,
+    #         N_ex=input_coeffs.shape[0],
     #         basis_type=input_basis_type,
-    #         domain=domain,
     #         N_quad=N_quad,
-    #         N_quad_for_orth=N_quad_for_orth,
     #     )
-    input_meta = None
+
+    #     input_eval = {
+    #         "field": input_meta["f_rec"],
+    #         "Xq": input_meta["Xq"],
+    #         "Yq": input_meta["Yq"],
+    #     }
+    input_eval = None
+    raw_input_on_grid = None
+    reencoded_input_eval = None
+
+    if input_coeffs is not None:
+        input_eval = evaluate_series_to_plot_points(
+            coeffs=input_coeffs,
+            basis_type=input_basis_type,
+            domain=domain,
+            N_quad=N_quad,
+            N_quad_for_orth=N_quad_for_orth,
+        )
+
     if (
-        input_coeffs is not None
-        and raw_input_x is not None
+        raw_input_x is not None
         and raw_input_y is not None
         and raw_input_values is not None
     ):
-        _, input_meta = encode_single_field_to_coeffs(
-            x=raw_input_x,
-            y=raw_input_y,
-            values=raw_input_values,
-            N_ex=input_coeffs.shape[0],
-            basis_type=input_basis_type,
-            N_quad=N_quad,
-        )
+        if input_eval is not None:
+            raw_input_on_grid = interpolate_raw_field_to_grid(
+                x_raw=raw_input_x,
+                y_raw=raw_input_y,
+                values_raw=raw_input_values,
+                Xq=input_eval["Xq"],
+                Yq=input_eval["Yq"],
+                method="linear",
+            )
 
-        input_eval = {
-            "field": input_meta["f_rec"],
-            "Xq": input_meta["Xq"],
-            "Yq": input_meta["Yq"],
-        }
+        # optional: separately check consistency with online re-encoding
+        if input_coeffs is not None:
+            _, input_meta = encode_single_field_to_coeffs(
+                x=raw_input_x,
+                y=raw_input_y,
+                values=raw_input_values,
+                N_ex=input_coeffs.shape[0],
+                basis_type=input_basis_type,
+                N_quad=N_quad,
+            )
+            reencoded_input_eval = {
+                "field": input_meta["f_rec"],
+                "Xq": input_meta["Xq"],
+                "Yq": input_meta["Yq"],
+                "raw_on_encoding_grid": input_meta["f_quad"],
+            }
+
     decoded_from_coeffs = evaluate_series_to_plot_points(
         coeffs=input_coeffs,
         basis_type=input_basis_type,
@@ -882,7 +919,7 @@ def visualize_prediction_2d(
         N_quad_for_orth=N_quad_for_orth,
     )
     print("input coeff decode consistency:",
-        rel_l2(decoded_from_coeffs["field"], input_meta["f_rec"]))
+        rel_l2(raw_input_on_grid, input_eval["field"]))
     
     raw_solution_on_grid = None
     pred_minus_raw = None
@@ -954,13 +991,8 @@ def visualize_prediction_2d(
     #                 f"{title_prefix} |encoded input - raw input|",
     #             )
     #             panel += 1
-
-    raw_input_on_grid = None
-    input_minus_raw = None
     if input_meta is not None:
-        raw_input_on_grid = input_meta["f_quad"]
-        input_minus_raw = input_meta["f_rec"] - input_meta["f_quad"]
-
+    
         ax = plt.subplot(2, 4, panel)
         plot_field_tri(
             ax,
@@ -977,20 +1009,24 @@ def visualize_prediction_2d(
             input_meta["Xq"],
             input_meta["Yq"],
             input_meta["f_quad"],
-            f"{title_prefix} raw input on encoding grid",
+            f"{title_prefix} raw input",
         )
         panel += 1
 
 
-        if panel <= 8:
+        # if panel <= 8:
+        #     ax = plt.subplot(2, 4, panel)
+        #     plot_field_tri(
+        #         ax,
+        #         input_meta["Xq"],
+        #         input_meta["Yq"],
+        #         np.abs(input_minus_raw),
+        #         f"{title_prefix} |encoded - raw input|",
+        #     )
+        #     panel += 1
+        if input_eval is not None and raw_input_on_grid is not None and panel <= 8:
             ax = plt.subplot(2, 4, panel)
-            plot_field_tri(
-                ax,
-                input_meta["Xq"],
-                input_meta["Yq"],
-                np.abs(input_minus_raw),
-                f"{title_prefix} |encoded - raw input|",
-            )
+            plot_field_tri(ax, input_eval["Xq"], input_eval["Yq"], np.abs(input_eval["field"] - raw_input_on_grid), f"{title_prefix} |encoded - raw|")
             panel += 1
 
 # # ----- test: if the representation on input is precise
@@ -1527,6 +1563,7 @@ def run_training_pipeline_2d(
         )
         with torch.no_grad():
             Yhat_t = model(Xte_t)
+        trained["model"] = model
 
     elif model_type == "rf":
         d_in_eff = Xtr_t.shape[1]
@@ -2213,7 +2250,7 @@ def encode_raw_input_field_to_flat_vector(
     X_flat = flatten_coeff_tensor(coeffs_batch)
     return X_flat, coeffs
 
-
+# timing the trained model for each step it takes to produce a solution
 def time_surrogate_end_to_end(
     *,
     out: dict,

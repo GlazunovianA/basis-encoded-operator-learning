@@ -11,7 +11,7 @@ class Settings:
     EPOCHS = 3000
     BATCH_SIZE = 64
     train = 'rf'  # 'rf' or 'nn'
-    FORCE_RECOMPUTE = True # set to True when dataset or expansion dimension changes
+    FORCE_RECOMPUTE = False # set to True when dataset or expansion dimension changes
     EQ = 'semilinear_poisson_3_basis_input' # options: 'darcy', 'poisson', 'semilinear_poisson_2', 'semilinear_poisson_3', 'semilinear_poisson_4', 'semilinear_poisson_5', 'sine_gordon'
     compare_original = False
     lengthscale = 4 # larger lengthscale -> smoother kernel in general. more detailed adjustment see scaling
@@ -33,7 +33,7 @@ class Settings:
     USE_PCA = True
     PCA_COMPONENTS = 64   # fallback/default only
 
-    AUTO_DIMENSION_SELECTION = False
+    AUTO_DIMENSION_SELECTION = True
 
     ANALYSIS_SAMPLE_SIZE_TRAIN = 300
     ANALYSIS_SAMPLE_SIZE_TEST = 100

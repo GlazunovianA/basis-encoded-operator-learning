@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.interpolate import griddata
 
-from test_expansion_refactored.basis_function import (
+from test_representation_system.basis_function import (
     get_legendre_quad_on_interval,
     get_basis_function_1d, get_basis_interpolation
 )
